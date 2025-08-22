@@ -1,105 +1,96 @@
-## Hola! Bienvenido a la herramienta para la detección rápida de neumonía
+Estas en la herramienta para la detección rápida de neumonía 🩺
+Este proyecto utiliza Deep Learning en el procesamiento de imágenes radiográficas de tórax (DICOM, JPG y PNG) con el fin de clasificarlas en 3 categorías:
 
-Deep Learning aplicado en el procesamiento de imágenes radiográficas de tórax en formato DICOM con el fin de clasificarlas en 3 categorías diferentes:
+Neumonía Bacteriana
 
-1. Neumonía Bacteriana
+Neumonía Viral
 
-2. Neumonía Viral
+Sin Neumonía
 
-3. Sin Neumonía
+Además, incluye la técnica de explicación Grad-CAM, que resalta mediante un mapa de calor las regiones relevantes de la radiografía para la predicción del modelo.
 
-Aplicación de una técnica de explicación llamada Grad-CAM para resaltar con un mapa de calor las regiones relevantes de la imagen de entrada.
+##Uso de la herramienta
 
----
+A continuación te explicamos cómo empezar a usarla:
 
-## Uso de la herramienta:
+Requerimientos principales:
 
-A continuación le explicaremos cómo empezar a utilizarla.
+Python 3.12
 
-Requerimientos necesarios para el funcionamiento:
+git clone https://github.com/TU_USUARIO/Neumonia_UAO.git cd Neumonia_UAO python -m venv .venv .venv\Scripts\activate # pip install -r requirements.txt
 
-- Instale Anaconda para Windows siguiendo las siguientes instrucciones:
-  https://docs.anaconda.com/anaconda/install/windows/
+Para la ejecución de la aplicación utilice python detector_neumonia.py
 
-- Abra Anaconda Prompt y ejecute las siguientes instrucciones:
+Uso de la interfaz gráfica:
 
-  conda create -n tf tensorflow
+Ingrese la cédula del paciente en la caja de texto.
 
-  conda activate tf
+Presione “Cargar Imagen” y seleccione la radiografía desde su computador.
 
-  cd UAO-Neumonia
+Presione “Predecir” y espere unos segundos hasta que observe:
 
-  pip install -r requirements.txt
+Clase predicha (bacteriana, viral o normal)
 
-  python detector_neumonia.py
+Probabilidad de la predicción (%)
 
-Uso de la Interfaz Gráfica:
+Mapa de calor (Grad-CAM)
 
-- Ingrese la cédula del paciente en la caja de texto
-- Presione el botón 'Cargar Imagen', seleccione la imagen del explorador de archivos del computador (Imagenes de prueba en https://drive.google.com/drive/folders/1WOuL0wdVC6aojy8IfssHcqZ4Up14dy0g?usp=drive_link)
-- Presione el botón 'Predecir' y espere unos segundos hasta que observe los resultados
-- Presione el botón 'Guardar' para almacenar la información del paciente en un archivo excel con extensión .csv
-- Presione el botón 'PDF' para descargar un archivo PDF con la información desplegada en la interfaz
-- Presión el botón 'Borrar' si desea cargar una nueva imagen
+Presione “Guardar” para almacenar la predicción en un archivo CSV.
 
----
+Presione “PDF” para descargar un reporte en formato PDF.
 
-## Arquitectura de archivos propuesta.
+Presione “Borrar” si desea reiniciar y cargar una nueva imagen.
 
-## detector_neumonia.py
+Arquitectura de archivos propuesta.
+detector_neumonia.py
+Contiene la interfaz gráfica en Tkinter. Los botones llaman a las funciones de los módulos del flujo.
 
-Contiene el diseño de la interfaz gráfica utilizando Tkinter.
+##flujo_rubrica/integrator.py
 
-Los botones llaman métodos contenidos en otros scripts.
+Integra los demás módulos y retorna lo necesario para la interfaz: clase, probabilidad y mapa de calor.
 
-## integrator.py
+##flujo_rubrica/read_img.py
 
-Es un módulo que integra los demás scripts y retorna solamente lo necesario para ser visualizado en la interfaz gráfica.
-Retorna la clase, la probabilidad y una imagen el mapa de calor generado por Grad-CAM.
+Lee imágenes en formato DICOM y JPG/PNG, las convierte a arreglos NumPy y permite visualizarlas.
 
-## read_img.py
+##flujo_rubrica/preprocess_img.py
 
-Script que lee la imagen en formato DICOM para visualizarla en la interfaz gráfica. Además, la convierte a arreglo para su preprocesamiento.
+Preprocesa la imagen:
 
-## preprocess_img.py
+Resize a 512x512
 
-Script que recibe el arreglo proveniento de read_img.py, realiza las siguientes modificaciones:
+Conversión a escala de grises
 
-- resize a 512x512
-- conversión a escala de grises
-- ecualización del histograma con CLAHE
-- normalización de la imagen entre 0 y 1
-- conversión del arreglo de imagen a formato de batch (tensor)
+CLAHE para mejorar contraste
 
-## load_model.py
+Normalización (0-1)
 
-Script que lee el archivo binario del modelo de red neuronal convolucional previamente entrenado llamado 'WilhemNet86.h5'.
+Conversión a tensor
 
-## grad_cam.py
+##flujo_rubrica/load_model.py
 
-Script que recibe la imagen y la procesa, carga el modelo, obtiene la predicción y la capa convolucional de interés para obtener las características relevantes de la imagen.
+Carga el modelo conv_MLP_84.h5 y valida su integridad.
 
----
+##flujo_rubrica/grad_cam.py
 
-## Acerca del Modelo
+Genera el mapa de calor Grad-CAM con la integración del modelo.
 
-La red neuronal convolucional implementada (CNN) es basada en el modelo implementado por F. Pasa, V.Golkov, F. Pfeifer, D. Cremers & D. Pfeifer
-en su artículo Efcient Deep Network Architectures for Fast Chest X-Ray Tuberculosis Screening and Visualization.
+##tests/
 
-Está compuesta por 5 bloques convolucionales, cada uno contiene 3 convoluciones; dos secuenciales y una conexión 'skip' que evita el desvanecimiento del gradiente a medida que se avanza en profundidad.
-Con 16, 32, 48, 64 y 80 filtros de 3x3 para cada bloque respectivamente.
+Contiene pruebas unitarias con pytest para validar las funciones principales (predict, preprocess).
+Acerca del Modelo
+El modelo implementado es una CNN (Convolutional Neural Network) basada en la arquitectura de referencia propuesta por F. Pasa, V. Golkov, F. Pfeifer, D. Cremers & D. Pfeifer en su artículo:
 
-Después de cada bloque convolucional se encuentra una capa de max pooling y después de la última una capa de Average Pooling seguida por tres capas fully-connected (Dense) de 1024, 1024 y 3 neuronas respectivamente.
+Efficient Deep Network Architectures for Fast Chest X-Ray Tuberculosis Screening and Visualization.
 
-Para regularizar el modelo utilizamos 3 capas de Dropout al 20%; dos en los bloques 4 y 5 conv y otra después de la 1ra capa Dense.
+Está compuesto por 5 bloques convolucionales con conexiones skip, capas de max pooling, average pooling y capas fully-connected. Incluye regularización con Dropout (20%).
 
-## Acerca de Grad-CAM
+Acerca de Grad-CAM
+Grad-CAM es una técnica para explicar decisiones de la red neuronal resaltando las regiones de la imagen más importantes para la predicción. Se calcula el gradiente de la salida respecto a una capa convolucional y se genera un mapa de calor que se superpone a la radiografía.
 
-Es una técnica utilizada para resaltar las regiones de una imagen que son importantes para la clasificación. Un mapeo de activaciones de clase para una categoría en particular indica las regiones de imagen relevantes utilizadas por la CNN para identificar esa categoría.
+Proyecto original realizado por:
+Isabella Torres Revelo - https://github.com/isa-tr Nicolas Diaz Salazar - https://github.com/nicolasdiazsalazar
 
-Grad-CAM realiza el cálculo del gradiente de la salida correspondiente a la clase a visualizar con respecto a las neuronas de una cierta capa de la CNN. Esto permite tener información de la importancia de cada neurona en el proceso de decisión de esa clase en particular. Una vez obtenidos estos pesos, se realiza una combinación lineal entre el mapa de activaciones de la capa y los pesos, de esta manera, se captura la importancia del mapa de activaciones para la clase en particular y se ve reflejado en la imagen de entrada como un mapa de calor con intensidades más altas en aquellas regiones relevantes para la red con las que clasificó la imagen en cierta categoría.
+##Proyecto actualizado por:
 
-## Proyecto original realizado por:
-
-Isabella Torres Revelo - https://github.com/isa-tr
-Nicolas Diaz Salazar - https://github.com/nicolasdiazsalazar
+Juan David Cordoba Cubides – Universidad Autónoma de Occidente (UAO) Henrry Camilo Valencia Valencia – Universidad Autónoma de Occidente (UAO) Julian Andres Escobar Rojas – Universidad Autónoma de Occidente (UAO) Juan Diego Castrillón Salazar – Universidad Autónoma de Occidente (UAO) Repositorio GitHub: https://github.com/juacho177/Neumonia_UAO
