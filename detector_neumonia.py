@@ -2,59 +2,129 @@
 # -*- coding: utf-8 -*-
 
 from tkinter import *
-from tkinter import ttk, font, filedialog, Entry
+from tkinter import ttk, font, filedialog
 
 from tkinter.messagebox import askokcancel, showinfo, WARNING
-import getpass
 from PIL import ImageTk, Image
 import csv
-import pyautogui
 import tkcap
-import img2pdf
 import numpy as np
-import time
-tf.compat.v1.disable_eager_execution()
-tf.compat.v1.experimental.output_all_intermediates(True)
+import tensorflow as tf
+#tf.compat.v1.disable_eager_execution()
+#tf.compat.v1.experimental.output_all_intermediates(True)
 import cv2
+import os
+import pydicom 
+from flujo_rubrica.read_img import read_dicom_file, read_jpg_file
+from flujo_rubrica.integrator import predict
 
+_MODEL = None
 
-def grad_cam(array):
-    img = preprocess(array)
+def model_fun():
+   
+    global _MODEL
+    if _MODEL is None:
+        model_path = os.path.join(os.path.dirname(__file__), "modelo", "conv_MLP_84.h5") 
+        if not os.path.exists(model_path):
+            raise FileNotFoundError(f"No se encontró el modelo en: {model_path}")
+        _MODEL = tf.keras.models.load_model(model_path, compile=False)
+        try:
+            print("Modelo cargado OK:", _MODEL.name, "| input_shape:", getattr(_MODEL, "input_shape", None))
+        except Exception:
+            pass
+    return _MODEL
+
+def _find_last_conv_layer(model, name_hint="conv10_thisone"):
+    """Devuelve una capa convolucional válida para Grad-CAM (por nombre o por tipo)."""
+    if name_hint:
+        try:
+            return model.get_layer(name_hint)
+        except (ValueError, KeyError):
+            pass
+    convs = [l for l in model.layers if isinstance(l, tf.keras.layers.Conv2D)]
+    if not convs:
+        raise ValueError("No se encontró capa convolucional para Grad-CAM.")
+    return convs[-1]
+
+def _compute_cam(model, x_batch, class_idx=None, conv_layer=None):
+   
+    if conv_layer is None:
+        conv_layer = _find_last_conv_layer(model)
+
+    grad_model = tf.keras.models.Model(model.inputs, [conv_layer.output, model.output])
+
+    x_batch = tf.convert_to_tensor(x_batch, dtype=tf.float32) #Agrego esta linea agregada para quitar el warning de keras
+# Con esto se logra estandarizar la esrada en tensor con la salida que estpy generando.
+
+    with tf.GradientTape() as tape:
+        #conv_out, preds = grad_model(x_batch, training=False) 
+        conv_out, preds = grad_model([x_batch], training=False)  
+        if isinstance(preds, (list, tuple)):
+            preds = preds[0]
+        if class_idx is None:
+            class_idx = int(tf.argmax(preds[0]))
+        loss = preds[:, class_idx]
+
+    grads = tape.gradient(loss, conv_out)   
+    conv_out = conv_out[0]                  
+    grads = grads[0]                        
+    weights = tf.reduce_mean(grads, axis=(0, 1))                         
+    cam = tf.reduce_sum(conv_out * tf.cast(weights, conv_out.dtype), axis=-1)  
+
+    cam = tf.nn.relu(cam)
+    cam = cam / (tf.reduce_max(cam) + 1e-8)
+    return cam.numpy()
+
+def _render_cam_on_image(cam, base_bgr, alpha=0.8, colormap=cv2.COLORMAP_JET):
+  
+    base = base_bgr
+    if base.ndim == 2:
+        base = cv2.cvtColor(base, cv2.COLOR_GRAY2BGR)
+    elif base.shape[2] == 1:
+        base = cv2.cvtColor(base[:, :, 0], cv2.COLOR_GRAY2BGR)
+
+    H, W = base.shape[:2]
+    heat = cv2.resize(cam, (W, H))
+    heat_u8 = (255.0 * np.clip(heat, 0.0, 1.0)).astype(np.uint8)
+    heatmap = cv2.applyColorMap(heat_u8, colormap)
+    overlay_bgr = cv2.addWeighted(heatmap, alpha, base, 1.0 - alpha, 0.0)
+    return overlay_bgr[:, :, ::-1]  # BGR -> RGB
+
+def grad_cam(array, class_idx=None, x_batch=None, alpha=0.8, colormap=cv2.COLORMAP_JET, conv_layer_name_hint="conv10_thisone"):
+  
     model = model_fun()
-    preds = model.predict(img)
-    argmax = np.argmax(preds[0])
-    output = model.output[:, argmax]
-    last_conv_layer = model.get_layer("conv10_thisone")
-    grads = K.gradients(output, last_conv_layer.output)[0]
-    pooled_grads = K.mean(grads, axis=(0, 1, 2))
-    iterate = K.function([model.input], [pooled_grads, last_conv_layer.output[0]])
-    pooled_grads_value, conv_layer_output_value = iterate(img)
-    for filters in range(64):
-        conv_layer_output_value[:, :, filters] *= pooled_grads_value[filters]
-    # creating the heatmap
-    heatmap = np.mean(conv_layer_output_value, axis=-1)
-    heatmap = np.maximum(heatmap, 0)  # ReLU
-    heatmap /= np.max(heatmap)  # normalize
-    heatmap = cv2.resize(heatmap, (img.shape[1], img.shape[2]))
-    heatmap = np.uint8(255 * heatmap)
-    heatmap = cv2.applyColorMap(heatmap, cv2.COLORMAP_JET)
-    img2 = cv2.resize(array, (512, 512))
-    hif = 0.8
-    transparency = heatmap * hif
-    transparency = transparency.astype(np.uint8)
-    superimposed_img = cv2.add(transparency, img2)
-    superimposed_img = superimposed_img.astype(np.uint8)
-    return superimposed_img[:, :, ::-1]
+
+    # Pepara un bash sólo si no lo recibimos ya
+    if x_batch is None:
+        x_batch = preprocess(array).astype("float32")
+    else:
+        x_batch = x_batch.astype("float32")
+
+    # Si no se da class_idx, se decide aquí 
+    if class_idx is None:
+        preds = model([x_batch], training=False).numpy()# Se le puso corchetes para evitar error de keras
+        #Asi continuamos con la matriz en x_batch 
+        class_idx = int(np.argmax(preds if preds.ndim == 2 else preds[0]))
+
+    conv_layer = _find_last_conv_layer(model, name_hint=conv_layer_name_hint)
+    cam = _compute_cam(model, tf.convert_to_tensor(x_batch), class_idx=class_idx, conv_layer=conv_layer)
+    overlay_rgb = _render_cam_on_image(cam, array, alpha=alpha, colormap=colormap)
+    return overlay_rgb
+  
 
 
 def predict(array):
     #   1. call function to pre-process image: it returns image in batch format
-    batch_array_img = preprocess(array)
+    batch_array_img = preprocess(array).astype("float32")
     #   2. call function to load model and predict: it returns predicted class and probability
     model = model_fun()
     # model_cnn = tf.keras.models.load_model('conv_MLP_84.h5')
-    prediction = np.argmax(model.predict(batch_array_img))
-    proba = np.max(model.predict(batch_array_img)) * 100
+    #preds = model(batch_array_img, training=False).numpy()
+    preds = model([batch_array_img], training=False).numpy()
+    prediction = int(np.argmax(preds))
+    proba = float(np.max(preds)) * 100.0
+    #prediction = np.argmax(model.predict(batch_array_img))
+    #proba = np.max(model.predict(batch_array_img)) * 100
     label = ""
     if prediction == 0:
         label = "bacteriana"
@@ -68,7 +138,7 @@ def predict(array):
 
 
 def read_dicom_file(path):
-    img = dicom.read_file(path)
+    img = pydicom.dcmread(path)
     img_array = img.pixel_array
     img2show = Image.fromarray(img_array)
     img2 = img_array.astype(float)
@@ -79,13 +149,15 @@ def read_dicom_file(path):
 
 
 def read_jpg_file(path):
-    img = cv2.imread(path)
-    img_array = np.asarray(img)
-    img2show = Image.fromarray(img_array)
-    img2 = img_array.astype(float)
-    img2 = (np.maximum(img2, 0) / img2.max()) * 255.0
-    img2 = np.uint8(img2)
-    return img2, img2show
+  
+    try:
+        pil_img = Image.open(path).convert("RGB")   
+    except Exception as e:
+        raise ValueError(f"No se pudo abrir la imagen con PIL: {path}\n{e}")
+
+    rgb = np.array(pil_img)                         
+    bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)     
+    return bgr, pil_img
 
 
 def preprocess(array):
@@ -188,22 +260,30 @@ class App:
             title="Select image",
             filetypes=(
                 ("DICOM", "*.dcm"),
-                ("JPEG", "*.jpeg"),
+                ("JPEG", "*.jpeg;*.jpg"),
                 ("jpg files", "*.jpg"),
                 ("png files", "*.png"),
+                ("todos","*.*")
             ),
         )
-        if filepath:
+        if not filepath:
+            return
+        ext = os.path.splitext(filepath)[1].lower()
+        if ext == ".dcm":
             self.array, img2show = read_dicom_file(filepath)
-            self.img1 = img2show.resize((250, 250), Image.ANTIALIAS)
-            self.img1 = ImageTk.PhotoImage(self.img1)
-            self.text_img1.image_create(END, image=self.img1)
-            self.button1["state"] = "enabled"
+        else: 
+             self.array, img2show = read_jpg_file(filepath)
+        RESAMPLE = getattr(Image, "Resampling", Image).LANCZOS
+        self.img1 = img2show.resize((250, 250), RESAMPLE)
+        self.img1 = ImageTk.PhotoImage(self.img1)
+        self.text_img1.image_create(END, image=self.img1)
+        self.button1["state"] = "enabled"
 
     def run_model(self):
         self.label, self.proba, self.heatmap = predict(self.array)
         self.img2 = Image.fromarray(self.heatmap)
-        self.img2 = self.img2.resize((250, 250), Image.ANTIALIAS)
+        RESAMPLE = getattr(Image, "Resampling", Image).LANCZOS
+        self.img2 = self.img2.resize((250, 250), RESAMPLE)
         self.img2 = ImageTk.PhotoImage(self.img2)
         print("OK")
         self.text_img2.image_create(END, image=self.img2)
